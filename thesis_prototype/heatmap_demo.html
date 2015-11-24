@@ -1,0 +1,402 @@
+<meta charset="utf-8">
+<head>
+<style>
+    /* disable text selection */
+    svg *::selection {
+        background : transparent;
+    }
+
+    svg *::-moz-selection {
+        background:transparent;
+    }
+
+    svg *::-webkit-selection {
+        background:transparent;
+    }
+    rect.selection {
+        stroke          : #333;
+        stroke-dasharray: 4px;
+        stroke-opacity  : 0.5;
+        fill            : transparent;
+    }
+
+    rect.cell-border {
+        stroke: #eee;
+        stroke-width:0.3px;
+    }
+
+    rect.cell-selected {
+        stroke: rgb(51,102,153);
+        stroke-width:0.5px;
+    }
+
+    rect.cell-hover {
+        stroke: #F00;
+        stroke-width:0.3px;
+    }
+
+    text.mono {
+        font-size: 9pt;
+        font-family: Consolas, courier;
+        fill: #aaa;
+    }
+
+    text.text-selected {
+        fill: #000;
+    }
+
+    text.text-highlight {
+        fill: #c00;
+    }
+    text.text-hover {
+        fill: #00C;
+    }
+    #tooltip {
+        position: absolute;
+        width: 200px;
+        height: auto;
+        padding: 10px;
+        background-color: white;
+        -webkit-border-radius: 10px;
+        -moz-border-radius: 10px;
+        border-radius: 10px;
+        -webkit-box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.4);
+        -moz-box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.4);
+        box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.4);
+        pointer-events: none;
+    }
+
+    #tooltip.hidden {
+        display: none;
+    }
+
+    #tooltip p {
+        margin: 0;
+        font-family: sans-serif;
+        font-size: 12px;
+        line-height: 20px;
+    }
+</style>
+    <link rel="stylesheet" type="text/css" href="css/thesis_demo.css">
+</head>
+<div id="tooltip" class="hidden">
+    <p><span id="value"></p>
+</div>
+
+<script src="js/libs/d3/d3.js"></script>
+<script src="js/config.js"></script>
+<script src="js/collection_metrics.js"></script>
+<script src="js/sorter.js"></script>
+<script src="js/libs/cubism/cubism.v1.js"></script>
+<script src="js/full_detail_parallel_coordinates.js"></script>
+
+
+Order:
+<select id="order">
+
+    <option value="horsort">horsort</option>
+    <option value="versort">versort</option>
+    <option value="defaultSetting">defaultSetting</option>
+</select>
+</select>
+<div id="chart" style='overflow:auto;'></div>
+<div id="cubismChart" ></div>
+<div id="parCoord" ></div>
+
+<script type="text/javascript">
+    var margin = { top: 1, right: 10, bottom: 1, left: 10 },
+            cellSize=5;
+    col_number=300;
+    row_number=5;
+            width = (cellSize/2)*col_number, // - margin.left - margin.right,
+            height = (cellSize/2)*row_number , // - margin.top - margin.bottom,
+            legendElementWidth = cellSize*2.5;
+
+   // [0 0 0; 1 1 0;1 1 0; 0 1 1;0 1 1; 1 0 1; 1 0 1; 0 0 0];
+    var data; // a global
+
+    d3.json("data/myfile_flattened.json", function(error, json) {
+        if (error) return console.warn(error);
+        data = json;
+
+//        var processedData = getVisualDataForFeature('mov','mean_position',false);
+//        add_metric('mean_position',visualizeIt('mean_position',processedData) ) ;
+//        var processedData2 = getVisualDataForFeature('heart','N',false);
+//        add_metric('N',visualizeIt('N',processedData2) ) ;
+        add_features()
+
+    });
+
+    function add_features(){
+        console.log(config_features);
+        var feat_keys = Object.keys(config_features);
+        console.log(feat_keys);
+        for (var key in config_features){
+            console.log(key);
+            var processedData = getVisualDataForFeature(config_features[key]['type'],key,false);
+            add_metric(key,visualizeIt(key,processedData) ) ;
+        }
+
+        var context = cubism.context().step(300000) // Distance between data points in milliseconds
+                .size(300) // Number of data points
+                .stop();   // Fetching from a static data source; don't update values;
+
+        d3.select("#cubismChart").selectAll(".axis")
+                .data(["top", "bottom"])
+                .enter().append("div")
+                .attr("class", function(d) { return d + " axis"; })
+                .each(function(d) { d3.select(this).call(context.axis().ticks(12).orient(d)); });
+
+        d3.select("#cubismChart").append("div")
+                .attr("class", "rule")
+                .call(context.rule());
+
+        d3.select("#cubismChart").selectAll(".horizon")
+                .data(Object.keys(config_features).map(getValue))
+                .enter().insert("div", ".bottom")
+                .attr("class", "horizon")
+                .call(context.horizon());
+
+        context.on("focus", function(i) {
+            d3.selectAll(".value").style("right", i == null ? null : context.size() - i + "px");
+        });
+
+        // Replace this with context.graphite and graphite.metric!
+        function getValue(name) {
+            var day = 0;
+            return context.metric(function (start, stop, step, callback) {
+                    var values = collection_metrics[name].data.filter(function(d){return d.row == day;});
+                    values = values.map(function(d){return d.value});
+                    callback(null, values);
+
+            }, name);
+
+        }
+
+        drawParallelCoordinates(d3.select("#parCoord"),100);
+    }
+
+
+
+    //default --> row == date, col == epoch, val = featureVal
+    //for now: mapping val to [-10,10]
+    //horSort --> quantity horSortRow/Col
+    //verSort --> for distribution vertSortRow/Col
+    function getVisualDataForFeature(category, feature,bool_fft){
+        var results = {};
+        var data_objects = data['user1']['data_obj'];
+        var nrRows = data_objects.length;
+        var nrColumns = 0;
+
+
+        var rearrangedObjects = rearrangeData(1,data_objects,category,300);
+        console.log(rearrangedObjects);
+        nrColumns =rearrangedObjects[4][feature].length; //hacky
+        for (var i = 0; i<rearrangedObjects.length; i++){
+            var signal;
+            signal = rearrangedObjects[i][feature];
+
+
+            //nrColumns = signal.length;
+
+            for(var j=0; j<signal.length;j++){
+                if(signal[j] !== null){
+                    results[i+","+j]={value:signal[j],row:i,col:j,sortedColIndex:null,sortedRowIndex:null};
+                }
+
+
+            }
+
+        }
+
+
+
+
+        addSortedResults(results,nrRows,nrColumns);
+        var resultArray = [];
+        for(var key in results) {
+            resultArray.push(results[key]);
+        }
+        return resultArray;
+
+    }
+    //hours_interval default 24u
+    function rearrangeData(hours_interval,data_objects,category,epoch){ //epoch meegeven bij visualisatie + preprocessed array vervangen door dictionary, more flattening in matlab
+        var resultDataObjects=[];
+        var tempStart = data_objects[0]['date'];
+        var tempEnd = tempStart + hours_interval;
+
+        var signals;
+        var columns = 0;
+        var startDateDO = data_objects[0]['date'];
+        var endDateDO = data_objects[0]['end_date'];
+
+        resultDataObjects.push({date:tempStart});
+
+        for (var i = 0; i<data_objects.length; i++) {
+            startDateDO = data_objects[i]['date'];
+            //skip columns --> here
+            var diff = startDateDO - endDateDO;
+            var columnsToSkip = Math.floor(diff / (epoch / (24*3600.0)));
+
+            if(columnsToSkip>0){
+                columns = columns + columnsToSkip;
+            }
+
+
+            for (var j = 0; j < columnsToSkip; j++) {
+
+                resultDataObjects[resultDataObjects.length - 1][key].push(null);
+            }
+            endDateDO = data_objects[i]['end_date'];
+            signals = data_objects[i].preprocessed[1][category];
+
+
+            var keys = Object.keys(signals);
+            var firstKey = keys[0];
+            var firstSignal = signals[firstKey].slice();
+            for (var j = 0; j < firstSignal.length; j++) {
+
+                if (j * (epoch/(24*3600.0)) + startDateDO > tempEnd) {
+
+                    resultDataObjects.push({date: tempEnd});//binding?
+                    console.log(columns);
+
+                    tempStart = tempEnd;
+                    tempEnd = tempStart + hours_interval;
+
+                    columns = 0;
+
+                    for (var k = 0; k < keys.length; k++) {
+                        var key = keys[k];
+                        resultDataObjects[resultDataObjects.length - 1][key] = [];
+                    }
+
+
+                }
+
+                for (var k = 0; k < keys.length; k++) {
+                    var key = keys[k];
+
+                    if (typeof resultDataObjects[resultDataObjects.length - 1][key] === 'undefined') {
+                        (resultDataObjects[resultDataObjects.length - 1])[key] = [];
+                    }
+                    (resultDataObjects[resultDataObjects.length - 1])[key].push(signals[key][j]);
+                }
+                columns = columns + 1;
+
+
+            }
+        }
+
+        return resultDataObjects;
+    }
+
+    function addSortedResults(matObjects,nrRows,nrColumns){
+
+        horSort(matObjects,nrRows,nrColumns);
+        verSort(matObjects,nrRows,nrColumns);
+    }
+
+    function horSort(matObjects,nrRows,nrColumns){
+        var arr;
+        for (var i= 0;i<nrRows; i++){
+            arr=[];
+            for (var j= 0;j<nrColumns; j++){
+                arr.push(matObjects[i+","+j]);
+
+            }
+            arr.sort(function(a, b){return a.value- b.value});
+            for (var j= 0;j<nrColumns; j++){
+                if(typeof arr[j] !== 'undefined'){
+                    arr[j]['sortedColIndex'] = j;
+                }
+
+            }
+        }
+    }
+
+    function verSort(matObjects,nrRows,nrColumns){
+        var arr ;
+        for (var j= 0;j<nrColumns; j++){
+            arr =  [];
+            for (var i= 0;i<nrRows; i++){
+                arr.push(matObjects[i+","+j]);
+            }
+            arr.sort(function(a, b){return a.value- b.value});
+            for (var i= 0;i<nrRows; i++){
+                if(typeof arr[i] !== 'undefined') {
+                    arr[i]['sortedRowIndex'] = i;
+                }
+            }
+        }
+
+    }
+
+
+
+
+
+    function visualizeIt(feature,data){
+
+                var colorScale = d3.scale.quantile()
+                        .domain([ config_features[feature]['min'] ,  config_features[feature]['max']])
+                        .range(config_features[feature]['color']);
+
+                var svg = d3.select("#chart").append("svg")
+                                .attr("width", width + margin.left + margin.right)
+                                .attr("height", height + margin.top + margin.bottom)
+                                .append("g")
+                                .attr("transform", "translate(" + margin.left + "," + margin.top + ")")
+                        ;
+                var rowSortOrder=false;
+                var colSortOrder=false;
+
+
+                var heatMap = svg.append("g").attr("class","g3")
+                                .selectAll(".cellg")
+                                .data(data,function(d){return d.row+":"+d.col;})
+                                .enter()
+                                .append("rect")
+                                .attr("x", function(d) { return (d.col+1) * cellSize/2; })
+                                .attr("y", function(d) { return (d.row+1) * cellSize/2; })
+                                .attr("class", function(d){return "cell cell-border cr"+(d.row)+" cc"+(d.col);})
+                                .attr("width", cellSize/2)
+                                .attr("height", cellSize/2)
+                                .style("fill", function(d) { return colorScale(d.value); })
+                                .on("mouseover", function(d){
+                                    //highlight text
+                                    d3.select(this).classed("cell-hover",true);
+                                    d3.selectAll(".rowLabel").classed("text-highlight",function(r,ri){ return ri==(d.row);});
+                                    d3.selectAll(".colLabel").classed("text-highlight",function(c,ci){ return ci==(d.col);});
+
+                                    //Update the tooltip position and value
+                                    d3.select("#tooltip")
+                                            .style("left", (d3.event.pageX+10) + "px")
+                                            .style("top", (d3.event.pageY-10) + "px")
+                                            .select("#value")
+                                            .text("data:"+d.value+"\nrow-col-idx:"+d.col+","+d.row+"\ncell-xy "+this.x.baseVal.value+", "+this.y.baseVal.value);
+                                    //Show the tooltip
+                                    d3.select("#tooltip").classed("hidden", false);
+                                })
+                                .on("mouseout", function(){
+                                    d3.select(this).classed("cell-hover",false);
+                                    d3.selectAll(".rowLabel").classed("text-highlight",false);
+                                    d3.selectAll(".colLabel").classed("text-highlight",false);
+                                    d3.select("#tooltip").classed("hidden", true);
+                                })
+                        ;
+
+
+
+
+                d3.select("#order").on("change",function(){
+                    order(this.value);
+                });
+        var legend = null;
+
+
+
+            return {svg:svg, legend:legend, heatMap:heatMap, data:data}
+            }
+</script>
